@@ -1,33 +1,40 @@
 import * as chai from "chai"
 import * as sinon from "sinon"
+import { Readable } from "stream"
 
 import * as Hub from "../../hub"
 
-import { AmazonS3Action } from "./amazon_s3"
+import { GoogleCloudStorageAction } from "./google_cloud_storage"
 
 import concatStream = require("concat-stream")
 
-const action = new AmazonS3Action()
+const action = new GoogleCloudStorageAction()
 
-export function expectAmazonS3Match(thisAction: AmazonS3Action, request: Hub.ActionRequest, match: any) {
+function expectGoogleCloudStorageMatch(request: Hub.ActionRequest,
+                                       bucketMatch: any,
+                                       fileMatch: any,
+                                       fileSaveMatch: Buffer) {
 
-  const expectedBuffer = delete match.Body
-
-  const uploadSpy = sinon.spy((params: any, callback: (err: any, data: any) => void) => {
-    params.Body.pipe(concatStream((buffer) => {
-      chai.expect(buffer).to.equal(expectedBuffer)
+  const fileSaveSpy = sinon.spy((upload: Readable, callback: (err: any, data: any) => void) => {
+    upload.pipe(concatStream((buffer) => {
+      chai.expect(buffer).to.equal(fileSaveMatch)
     }))
-    callback(null, `successfully put item ${params} in database`)
+    callback(null, `great success`)
   })
-  const stubClient = sinon.stub(thisAction as any, "amazonS3ClientFromRequest")
+  const fileSpy = sinon.spy(() => ({save: fileSaveSpy}))
+  const bucketSpy = sinon.spy(() => ({file: fileSpy}))
+
+  const stubClient = sinon.stub(action as any, "gcsClientFromRequest")
     .callsFake(() => ({
-      upload: uploadSpy,
+      bucket: bucketSpy,
     }))
+
   const stubSuggestedFilename = sinon.stub(request as any, "suggestedFilename")
     .callsFake(() => "stubSuggestedFilename")
 
-  return chai.expect(thisAction.validateAndExecute(request)).to.be.fulfilled.then(() => {
-    chai.expect(uploadSpy).to.have.been.called
+  return chai.expect(action.validateAndExecute(request)).to.be.fulfilled.then(() => {
+    chai.expect(bucketSpy).to.have.been.calledWithMatch(bucketMatch)
+    chai.expect(fileSpy).to.have.been.calledWithMatch(fileMatch)
     stubClient.restore()
     stubSuggestedFilename.restore()
   })
@@ -39,31 +46,30 @@ describe(`${action.constructor.name} unit tests`, () => {
 
     it("errors if there is no bucket", () => {
       const request = new Hub.ActionRequest()
+      request.type = Hub.ActionType.Dashboard
       request.params = {
-        access_key_id: "mykey",
-        secret_access_key: "mysecret",
-        region: "us-east-1",
+        client_email: "myemail",
+        private_key: "mykey",
+        project_id: "myproject",
       }
       request.formParams = {}
       request.attachment = {}
       request.attachment.dataBuffer = Buffer.from("1,2,3,4", "utf8")
-      request.type = Hub.ActionType.Dashboard
 
       return chai.expect(action.validateAndExecute(request)).to.eventually
-        .be.rejectedWith("Need Amazon S3 bucket.")
+        .be.rejectedWith("Need Google Cloud Storage bucket.")
     })
 
     it("errors if the input has no attachment", () => {
       const request = new Hub.ActionRequest()
       request.type = Hub.ActionType.Dashboard
+      request.params = {
+        client_email: "myemail",
+        private_key: "mykey",
+        project_id: "myproject",
+      }
       request.formParams = {
         bucket: "mybucket",
-        filename: "whatever",
-      }
-      request.params = {
-        access_key_id: "mykey",
-        secret_access_key: "mysecret",
-        region: "us-east-1",
       }
 
       return chai.expect(action.validateAndExecute(request)).to.eventually
@@ -71,43 +77,41 @@ describe(`${action.constructor.name} unit tests`, () => {
           "A streaming action was sent incompatible data. The action must have a download url or an attachment.")
     })
 
-    it("sends right body to key and bucket", () => {
+    it("sends right body to filename and bucket", () => {
       const request = new Hub.ActionRequest()
       request.type = Hub.ActionType.Dashboard
+      request.params = {
+        client_email: "myemail",
+        private_key: "mykey",
+        project_id: "myproject",
+      }
       request.formParams = {
         bucket: "mybucket",
       }
-      request.params = {
-        access_key_id: "mykey",
-        secret_access_key: "mysecret",
-        region: "us-east-1",
-      }
       request.attachment = {dataBuffer: Buffer.from("1,2,3,4", "utf8")}
-      return expectAmazonS3Match(action, request, {
-        Bucket: "mybucket",
-        Key: "stubSuggestedFilename",
-        Body: Buffer.from("1,2,3,4", "utf8"),
-      })
+      return expectGoogleCloudStorageMatch(request,
+        "mybucket",
+        "stubSuggestedFilename",
+        Buffer.from("1,2,3,4", "utf8"))
     })
 
     it("sends to right filename if specified", () => {
       const request = new Hub.ActionRequest()
       request.type = Hub.ActionType.Dashboard
+      request.params = {
+        client_email: "myemail",
+        private_key: "mykey",
+        project_id: "myproject",
+      }
       request.formParams = {
         bucket: "mybucket",
         filename: "mywackyfilename",
       }
-      request.params = {
-        access_key_id: "mykey",
-        secret_access_key: "mysecret",
-        region: "us-east-1",
-      }
       request.attachment = {dataBuffer: Buffer.from("1,2,3,4", "utf8")}
-      return expectAmazonS3Match(action, request, {
-        Bucket: "mybucket",
-        Key: "mywackyfilename",
-        Body: Buffer.from("1,2,3,4", "utf8"),
-      })
+      return expectGoogleCloudStorageMatch(request,
+        "mybucket",
+        "mywackyfilename",
+        Buffer.from("1,2,3,4", "utf8"))
     })
 
   })
@@ -120,22 +124,12 @@ describe(`${action.constructor.name} unit tests`, () => {
 
     it("has form with correct buckets", (done) => {
 
-      const stubClient = sinon.stub(action as any, "amazonS3ClientFromRequest")
+      const stubClient = sinon.stub(action as any, "gcsClientFromRequest")
         .callsFake(() => ({
-          listBuckets: () => {
-            return {
-              promise: async () => {
-                return new Promise<any>((resolve) => {
-                  resolve({
-                    Buckets: [
-                      { Name: "A" },
-                      { Name: "B" },
-                    ],
-                  })
-                })
-              },
-            }
-          },
+          getBuckets: () => [[
+            {id: "1", name: "A"},
+            {id: "2", name: "B"},
+          ]],
         }))
 
       const request = new Hub.ActionRequest()
@@ -146,15 +140,11 @@ describe(`${action.constructor.name} unit tests`, () => {
           name: "bucket",
           required: true,
           options: [
-            {name: "A", label: "A"},
-            {name: "B", label: "B"},
+            {name: "1", label: "A"},
+            {name: "2", label: "B"},
           ],
           type: "select",
-          default: "A",
-        }, {
-          label: "Path",
-          name: "path",
-          type: "string",
+          default: "1",
         }, {
           label: "Filename",
           name: "filename",
