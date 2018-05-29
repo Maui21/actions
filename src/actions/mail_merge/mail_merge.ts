@@ -30,15 +30,15 @@ export class MailMerge extends Hub.Action {
     if (!(request.formParams && request.formParams.letterType)) {
       throw "Couldn't get required params."
     }
-    
+
     console.log(request.attachment.dataJSON)
 
     // TODO: look inside request.scheduledPlan.query.fields to verify the necessary fields are present
-    
+
     const queryResults = request.attachment.dataJSON
 
     let subject: string
-    switch(request.formParams.letterType){
+    switch (request.formParams.letterType) {
       case "discountCompliance":
         subject = "Your Sales Trends"
         break
@@ -61,7 +61,7 @@ export class MailMerge extends Hub.Action {
         totalSpent:  dataRow["order_items.total_sale_price"]
       }
     })
-    
+
     const recordHtml = cleanedResults.map((record: any) => {
       return `<table>
           <tr><th>Subject</th><td>${subject}</td></tr>
@@ -72,22 +72,23 @@ export class MailMerge extends Hub.Action {
           <tr><th>Total Spent</th><td>${record.totalSpent}</td></tr>
         </table>`
     })
-    
+
     const fileContents = `
       <body>
       <head><link rel="stylesheet" type="text/css" href="mail_merge.css"></head>
-      <div id="header"><h1>Mail Merge - Demo Output</h1><h2>Ran at: ${moment().format('MMMM Do YYYY, h:mm:ss a')}</h2></div>
+      <div id="header"><h1>Mail Merge - Demo Output</h1>
+      <h2>Ran at: ${moment().format('MMMM Do YYYY, h:mm:ss a')}</h2></div>
       <html>${recordHtml.join("\n")}</html>
       </body>`;
-    
+
     try {
       fs.writeFileSync('./public/mail_merge_results.html', fileContents)
       console.log("MAIL MERGE - File created")
     } catch (err) {
       console.error(err)
     }
- 
-    let response = { success: true, message: "no op!" }
+
+    const response = { success: true, message: "no op!" }
     return new Hub.ActionResponse(response)
   }
 
